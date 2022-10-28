@@ -1,19 +1,79 @@
 import * as core from '@actions/core'
-import {wait} from './wait'
+import github from '@actions/github'
+import {createActionAuth} from '@octokit/auth-action'
+import {readFileSync} from 'fs'
+import robert from 'robert'
+import * as git from './git'
+import {findWingetFileIn} from './path'
 
 async function run(): Promise<void> {
-  try {
-    const ms: string = core.getInput('milliseconds')
-    core.debug(`Waiting ${ms} milliseconds ...`) // debug is only output if you set the secret `ACTIONS_STEP_DEBUG` to true
+    try {
+        const octokit = github.getOctokit('', {authStrategy: createActionAuth})
+        const context = github.context
 
-    core.debug(new Date().toTimeString())
-    await wait(parseInt(ms, 10))
-    core.debug(new Date().toTimeString())
+        const wingetFile = await findWingetFileIn('.')
+        const wingetData = JSON.parse(readFileSync(wingetFile, 'utf8'))
+        const client = robert.client('https://api.winget.run').format('json')
 
-    core.setOutput('time', new Date().toTimeString())
-  } catch (error) {
-    if (error instanceof Error) core.setFailed(error.message)
-  }
+        for (const obj of wingetData.Sources[0].Packages) {
+            const [publisher, winPackage] = obj.Id.split('.')
+            const version = obj.Version
+            const data = await client
+                .get(`/v2/packages/${publisher}/${winPackage}`)
+                .send()
+            if (data.Package.Versions[0] === version) {
+                // continue
+                continue
+            }
+
+            core.warning(
+                `Version mismatch for ${obj.Id}. ${data.Package.Versions[0]} !== ${version}`
+            )
+
+            var updateData = {
+                id: obj.Id,
+                oldVersion: version,
+                newVersion: data.Package.Versions[0]
+            }
+
+            var newBranch = await git.createBranchFromMain({
+                octokit,
+                context,
+                updateData
+            })
+
+            // In place update, we need the file we wish to PR as b64
+            obj.Version = data.Package.Versions[0]
+
+            await git.modifyFile({
+                octokit,
+                context,
+                path: wingetFile,
+                updateData,
+                content: Buffer.from(
+                    JSON.stringify(wingetData, null, 4)
+                ).toString('base64'),
+                sha: await git.getShaForFile({
+                    octokit,
+                    context,
+                    path: wingetFile
+                }),
+                branch: newBranch.ref
+            })
+
+            git.removeOpenPRsFor({octokit, context, updateData})
+
+            git.createPR({
+                octokit,
+                context,
+                name: `Update ${updateData.id} to ${updateData.newVersion}`,
+                description: `Automatically update ${updateData.id} to ${updateData.newVersion}`,
+                branch: newBranch.ref
+            })
+        }
+    } catch (error: any) {
+        core.setFailed(error.message)
+    }
 }
 
 run()
