@@ -1,6 +1,5 @@
 import * as core from '@actions/core'
-import github from '@actions/github'
-import {createActionAuth} from '@octokit/auth-action'
+import * as github from '@actions/github'
 import {readFileSync} from 'fs'
 import robert from 'robert'
 import * as git from './git'
@@ -8,7 +7,7 @@ import {findWingetFileIn} from './path'
 
 async function run(): Promise<void> {
     try {
-        const octokit = github.getOctokit('', {authStrategy: createActionAuth})
+        const octokit = github.getOctokit(process.env.GITHUB_TOKEN as string)
         const context = github.context
 
         const wingetFile = await findWingetFileIn('.')
@@ -22,7 +21,6 @@ async function run(): Promise<void> {
                 .get(`/v2/packages/${publisher}/${winPackage}`)
                 .send()
             if (data.Package.Versions[0] === version) {
-                // continue
                 continue
             }
 
@@ -72,6 +70,7 @@ async function run(): Promise<void> {
             })
         }
     } catch (error: any) {
+        core.info(error.stack)
         core.setFailed(error.message)
     }
 }
